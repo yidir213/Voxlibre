@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.ryanheise.audioservice.audio_service-release-3:/anim/fragment_fast_out_extra_slow_in.xml",
+        "source": "com.ryanheise.audioservice.audio_service-fragment-1.7.1-21:/anim/fragment_fast_out_extra_slow_in.xml"
+    }
+]

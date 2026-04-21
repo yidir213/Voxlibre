@@ -1,0 +1,19 @@
+/usr/bin/cmake \
+  -H/root/flutter/packages/flutter_tools/gradle/src/main/groovy \
+  -DCMAKE_SYSTEM_NAME=Android \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DCMAKE_SYSTEM_VERSION=21 \
+  -DANDROID_PLATFORM=android-21 \
+  -DANDROID_ABI=x86_64 \
+  -DCMAKE_ANDROID_ARCH_ABI=x86_64 \
+  -DANDROID_NDK=/root/Android/Sdk/ndk/27.0.12077973 \
+  -DCMAKE_ANDROID_NDK=/root/Android/Sdk/ndk/27.0.12077973 \
+  -DCMAKE_TOOLCHAIN_FILE=/root/Android/Sdk/ndk/27.0.12077973/build/cmake/android.toolchain.cmake \
+  -DCMAKE_MAKE_PROGRAM=/root/Android/Sdk/cmake/3.22.1/bin/ninja \
+  -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=/content/prj/voxlibre-_-lecteur-ebook-ia/build/app/intermediates/cxx/RelWithDebInfo/1z47205q/obj/x86_64 \
+  -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/content/prj/voxlibre-_-lecteur-ebook-ia/build/app/intermediates/cxx/RelWithDebInfo/1z47205q/obj/x86_64 \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -B/content/prj/voxlibre-_-lecteur-ebook-ia/android/app/.cxx/RelWithDebInfo/1z47205q/x86_64 \
+  -GNinja \
+  -Wno-dev \
+  --no-warn-unused-cli

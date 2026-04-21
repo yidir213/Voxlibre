@@ -1,0 +1,7 @@
+int drawable audio_service_fast_forward 0x0
+int drawable audio_service_fast_rewind 0x0
+int drawable audio_service_pause 0x0
+int drawable audio_service_play_arrow 0x0
+int drawable audio_service_skip_next 0x0
+int drawable audio_service_skip_previous 0x0
+int drawable audio_service_stop 0x0
