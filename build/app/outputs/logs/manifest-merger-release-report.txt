@@ -19,7 +19,7 @@ MERGED from [androidx.startup:startup-runtime:1.1.1] /root/.gradle/caches/8.10.2
 	android:appComponentFactory
 		ADDED from [androidx.core:core:1.13.1] /root/.gradle/caches/8.10.2/transforms/dfc2fbca530748e569b0737b09fa016f/transformed/core-1.13.1/AndroidManifest.xml:28:18-86
 	android:label
-		ADDED from /content/prj/voxlibre-_-lecteur-ebook-ia/android/app/src/main/AndroidManifest.xml:11:9-50
+		ADDED from /content/prj/voxlibre-_-lecteur-ebook-ia/android/app/src/main/AndroidManifest.xml:11:9-33
 	android:icon
 		ADDED from /content/prj/voxlibre-_-lecteur-ebook-ia/android/app/src/main/AndroidManifest.xml:13:9-43
 	android:usesCleartextTraffic
