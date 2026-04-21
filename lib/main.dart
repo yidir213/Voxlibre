@@ -11,11 +11,15 @@ void main() async {
     debugPrint("Could not load .env file. Make sure it exists.");
   }
   
-  await JustAudioBackground.init(
-    androidNotificationChannelId: 'com.voxlibre.audio.channel',
-    androidNotificationChannelName: 'VoxLibre Audio',
-    androidNotificationOngoing: true,
-  );
+  try {
+    await JustAudioBackground.init(
+      androidNotificationChannelId: 'com.voxlibre.audio.channel',
+      androidNotificationChannelName: 'VoxLibre Audio',
+      androidNotificationOngoing: true,
+    );
+  } catch (e) {
+    debugPrint("Background audio init failed: $e");
+  }
   
   runApp(const VoxLibreApp());
 }
