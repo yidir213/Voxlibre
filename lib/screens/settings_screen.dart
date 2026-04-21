@@ -17,8 +17,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _selectedVoice = 'marie';
   String _selectedEmotion = 'neutral';
 
-  final List<String> _emotions = ['neutral', 'happy', 'sad', 'excited', 'curious', 'angry'];
-  
+  final Map<String, List<String>> _voiceToEmotions = {
+    'marie': ['neutral', 'happy', 'sad', 'excited', 'curious', 'angry'],
+    'jane': ['neutral', 'sarcasm', 'confused', 'shameful', 'sad', 'jealousy', 'frustrated', 'curious', 'confident'],
+    'paul': ['neutral', 'sad', 'happy', 'frustrated', 'excited', 'confident', 'cheerful', 'angry'],
+    'oliver': ['neutral', 'sad', 'excited', 'curious', 'confident', 'cheerful', 'angry'],
+  };
+
   final Map<String, String> _voiceToLang = {
     'marie': 'fr',
     'jane': 'gb',
@@ -42,9 +47,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (parts.length == 3) {
       if (['fr', 'gb', 'en'].contains(parts[0])) _selectedLanguage = parts[0];
       if (_voiceToLang.containsKey(parts[1])) _selectedVoice = parts[1];
-      if (_emotions.contains(parts[2])) _selectedEmotion = parts[2];
+      
+      // Valider l'émotion par rapport à la voix
+      if (_voiceToEmotions[_selectedVoice]?.contains(parts[2]) == true) {
+        _selectedEmotion = parts[2];
+      }
 
-      // Auto-corriger si la voix ne correspond pas à la langue suite à un ancien paramètre
+      // Auto-corriger si la voix ne correspond pas à la langue
       if (_voiceToLang[_selectedVoice] != _selectedLanguage) {
         _selectedLanguage = _voiceToLang[_selectedVoice]!;
       }
@@ -118,6 +127,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     _selectedLanguage = val;
                     // Reset voice to the first available in this language
                     _selectedVoice = _getVoicesForLang(val).first;
+                    
+                    // Si la nouvelle voix (auto-sélectionnée) ne supporte pas l'émotion actuelle, on remet par défaut
+                    if (!(_voiceToEmotions[_selectedVoice]?.contains(_selectedEmotion) ?? false)) {
+                      _selectedEmotion = 'neutral';
+                    }
                   });
                 }
               },
@@ -133,6 +147,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   setState(() {
                     _selectedVoice = val;
                     _selectedLanguage = _voiceToLang[val]!;
+                    
+                    // Si la nouvelle voix ne supporte pas l'émotion actuelle, on remet par défaut
+                    if (!(_voiceToEmotions[_selectedVoice]?.contains(_selectedEmotion) ?? false)) {
+                      _selectedEmotion = 'neutral';
+                    }
                   });
                 }
               },
@@ -142,7 +161,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildDropdown(
               label: 'Émotion',
               value: _selectedEmotion,
-              items: _emotions,
+              items: _voiceToEmotions[_selectedVoice] ?? ['neutral'],
               onChanged: (val) {
                 if (val != null) setState(() => _selectedEmotion = val);
               },
@@ -160,7 +179,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('ID Mistral généré :', style: TextStyle(fontSize: 12, color: Colors.deepPurple)),
+                  const Text('ID :', style: TextStyle(fontSize: 12, color: Colors.deepPurple)),
                   const SizedBox(height: 4),
                   Text(
                     _finalVoiceId,
