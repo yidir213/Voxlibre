@@ -45,7 +45,7 @@
         android:appComponentFactory="androidx.core.app.CoreComponentFactory"
         android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="voxlibre_lecteur_ebook_ia"
+        android:label="Voxlibre"
         android:usesCleartextTraffic="true" >
         <activity
             android:name="com.example.voxlibre_lecteur_ebook_ia.MainActivity"

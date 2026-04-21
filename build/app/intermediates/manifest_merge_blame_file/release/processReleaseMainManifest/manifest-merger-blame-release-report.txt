@@ -76,8 +76,8 @@
 46        android:extractNativeLibs="true"
 47        android:icon="@mipmap/ic_launcher"
 47-->/content/prj/voxlibre-_-lecteur-ebook-ia/android/app/src/main/AndroidManifest.xml:13:9-43
-48        android:label="voxlibre_lecteur_ebook_ia"
-48-->/content/prj/voxlibre-_-lecteur-ebook-ia/android/app/src/main/AndroidManifest.xml:11:9-50
+48        android:label="Voxlibre"
+48-->/content/prj/voxlibre-_-lecteur-ebook-ia/android/app/src/main/AndroidManifest.xml:11:9-33
 49        android:usesCleartextTraffic="true" >
 49-->/content/prj/voxlibre-_-lecteur-ebook-ia/android/app/src/main/AndroidManifest.xml:14:9-44
 50        <activity
