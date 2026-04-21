@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 import 'screens/reader_screen.dart';
 
 void main() async {
@@ -9,6 +10,13 @@ void main() async {
   } catch (e) {
     debugPrint("Could not load .env file. Make sure it exists.");
   }
+  
+  await JustAudioBackground.init(
+    androidNotificationChannelId: 'com.voxlibre.audio.channel',
+    androidNotificationChannelName: 'VoxLibre Audio',
+    androidNotificationOngoing: true,
+  );
+  
   runApp(const VoxLibreApp());
 }
 

@@ -5,12 +5,40 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:epub_view/epub_view.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:audioplayers/audioplayers.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:audio_session/audio_session.dart';
 import '../services/mistral_service.dart';
 import 'settings_screen.dart';
+
+class MyCustomSource extends StreamAudioSource {
+  final List<int> bytes;
+  final String contentId;
+  final String title;
+
+  MyCustomSource({required this.bytes, required this.contentId, required this.title}) 
+  : super(tag: MediaItem(
+      id: contentId,
+      title: title,
+      artist: 'VoxLibre IA',
+      artUri: Uri.parse('https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?q=80&w=1000&auto=format&fit=crop'), // Belle couverture pour l'écran de verrouillage
+    ));
+
+  @override
+  Future<StreamAudioResponse> request([int? start, int? end]) async {
+    start ??= 0;
+    end ??= bytes.length;
+    return StreamAudioResponse(
+      sourceLength: bytes.length,
+      contentLength: end - start,
+      offset: start,
+      stream: Stream.value(bytes.sublist(start, end)),
+      contentType: 'audio/mpeg',
+    );
+  }
+}
 
 class ReaderScreen extends StatefulWidget {
   const ReaderScreen({super.key});
@@ -53,36 +81,30 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _initAudioSession();
     _loadRecentBooks();
 
-    _audioPlayer.onPlayerStateChanged.listen((state) {
-      if (mounted) {
-        setState(() {
-          _isPlaying = state == PlayerState.playing;
-          if (state == PlayerState.paused) {
-            _isPaused = true;
-          } else if (state == PlayerState.playing) {
-            _isPaused = false;
-          }
-        });
-      }
-    });
+    _audioPlayer.playerStateStream.listen((state) {
+      if (!mounted) return;
+      setState(() {
+        _isPlaying = state.playing && state.processingState != ProcessingState.completed;
+        _isPaused = !state.playing && (state.processingState == ProcessingState.ready || state.processingState == ProcessingState.buffering);
+      });
 
-    _audioPlayer.onPlayerComplete.listen((_) {
-      if (mounted && _isAutoPlaying && !_isPaused) {
-        if (_readingIndex < _chapterParagraphs.length - 1) {
-          setState(() {
-            _readingIndex++;
-          });
-          _scrollToCurrent();
-          _playCurrentChunk();
-          _saveProgress();
-        } else {
-          setState(() {
-            _isAutoPlaying = false;
-            // On le garde sur le dernier index pour pouvoir re-cliquer ou naviguer
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Fin du chapitre atteinte.', style: TextStyle(fontWeight: FontWeight.bold))),
-          );
+      if (state.processingState == ProcessingState.completed) {
+        if (_isAutoPlaying && !_isPaused) {
+          if (_readingIndex < _chapterParagraphs.length - 1) {
+            setState(() {
+              _readingIndex++;
+            });
+            _scrollToCurrent();
+            _playCurrentChunk();
+            _saveProgress();
+          } else {
+            setState(() {
+              _isAutoPlaying = false;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Fin du chapitre atteinte.', style: TextStyle(fontWeight: FontWeight.bold))),
+            );
+          }
         }
       }
     });
@@ -127,10 +149,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
       };
       
       if (existingIndex >= 0) {
-        _recentBooks[existingIndex] = bookData;
-      } else {
-        _recentBooks.insert(0, bookData);
+        _recentBooks.removeAt(existingIndex);
       }
+      _recentBooks.insert(0, bookData);
       
       // Keep only last 10 books
       if (_recentBooks.length > 10) {
@@ -289,8 +310,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       await _audioPlayer.pause();
       setState(() => _isPaused = true);
     } else if (_isPaused) {
-      await _audioPlayer.resume();
-      await _audioPlayer.setPlaybackRate(_playbackRate); 
+      await _audioPlayer.play(); // just_audio resume() is basically play() because speed is kept.
+      await _audioPlayer.setSpeed(_playbackRate); 
       setState(() {
         _isPaused = false;
         _isAutoPlaying = true;
@@ -303,11 +324,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _seekRelative(int seconds) async {
     if (!_isPlaying && !_isPaused) return;
-    final pos = await _audioPlayer.getCurrentPosition();
-    if (pos != null) {
-      final newPos = pos + Duration(seconds: seconds);
-      await _audioPlayer.seek(newPos < Duration.zero ? Duration.zero : newPos);
-    }
+    final pos = _audioPlayer.position;
+    final newPos = pos + Duration(seconds: seconds);
+    await _audioPlayer.seek(newPos < Duration.zero ? Duration.zero : newPos);
   }
 
   Future<void> _playFromIndex(int index) async {
@@ -388,8 +407,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (!_isAutoPlaying) return; 
 
     try {
-      await _audioPlayer.play(BytesSource(Uint8List.fromList(audioBytes)));
-      await _audioPlayer.setPlaybackRate(_playbackRate);
+      final source = MyCustomSource(
+        bytes: audioBytes,
+        contentId: 'chap_${_currentChapterIndex}_para_$_readingIndex',
+        title: 'Chapitre ${_currentChapterIndex + 1} - Paragraphe ${_readingIndex + 1}',
+      );
+      
+      await _audioPlayer.setAudioSource(source);
+      await _audioPlayer.setSpeed(_playbackRate);
+      await _audioPlayer.play();
 
       _prefetchNextChunk(_readingIndex + 1);
     } catch (e) {
@@ -657,21 +683,39 @@ class _ReaderScreenState extends State<ReaderScreen> {
       padding: const EdgeInsets.fromLTRB(20, 100, 20, 200), // Espace en haut pour la navbar et en bas pour le lecteur
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: List.generate(_chapterParagraphs.length, (index) {
-          final text = _chapterParagraphs[index];
-          final isReading = _readingIndex == index && (_isPlaying || _isLoadingAudio || _isPaused);
-          return Container(
-            key: _paragraphKeys[index],
-            child: CodeParagraph(
-              text: text,
-              isReading: isReading,
-              isDarkMode: _isDarkMode,
-              onTap: () {
-                _playFromIndex(index);
-              },
+        children: [
+          if (_currentChapterTitle.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 40, top: 16),
+              child: Text(
+                _currentChapterTitle,
+                style: TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.w900,
+                  color: _isDarkMode ? Colors.white : Colors.black87,
+                  fontFamily: 'Georgia',
+                  height: 1.3,
+                  letterSpacing: 0.5,
+                ),
+                textAlign: TextAlign.center,
+              ),
             ),
-          );
-        }),
+          ...List.generate(_chapterParagraphs.length, (index) {
+            final text = _chapterParagraphs[index];
+            final isReading = _readingIndex == index && (_isPlaying || _isLoadingAudio || _isPaused);
+            return Container(
+              key: _paragraphKeys[index],
+              child: CodeParagraph(
+                text: text,
+                isReading: isReading,
+                isDarkMode: _isDarkMode,
+                onTap: () {
+                  _playFromIndex(index);
+                },
+              ),
+            );
+          }),
+        ],
       ),
     );
   }
@@ -714,7 +758,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       max: 2.0,
                       onChanged: (val) {
                         setState(() => _playbackRate = val);
-                        _audioPlayer.setPlaybackRate(val);
+                        _audioPlayer.setSpeed(val);
                       },
                     ),
                   ),
@@ -821,7 +865,7 @@ class CodeParagraph extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 300),
-        margin: const EdgeInsets.only(bottom: 16),
+        margin: const EdgeInsets.only(bottom: 24),
         decoration: BoxDecoration(
           color: isReading ? Colors.orangeAccent.withOpacity(isDarkMode ? 0.2 : 0.08) : Colors.transparent,
           borderRadius: BorderRadius.circular(12),
@@ -830,13 +874,13 @@ class CodeParagraph extends StatelessWidget {
             width: 1.5
           ),
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         child: Text(
           text,
           style: TextStyle(
             color: baseTextColor.withOpacity(isReading ? 1.0 : 0.8),
             fontSize: 19,
-            height: 1.65,
+            height: 1.8,
             fontFamily: 'Georgia', 
           ),
         ),

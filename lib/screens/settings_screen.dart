@@ -94,7 +94,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             const Text(
               'Clé API Mistral',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.deepPurple),
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.orangeAccent.shade700),
             ),
             const SizedBox(height: 8),
             TextField(
@@ -112,7 +112,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             
             const Text(
               'Configuration de la Voix (TTS)',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.deepPurple),
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.orangeAccent.shade700),
             ),
             const SizedBox(height: 16),
 
@@ -172,9 +172,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.deepPurple.shade50,
+                color: Colors.orangeAccent.shade50,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.deepPurple.shade200),
+                border: Border.all(color: Colors.orangeAccent.shade200),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
