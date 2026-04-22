@@ -64,7 +64,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
   double _playbackRate = 1.0;
 
   String _currentChapterTitle = '';
-  List<String> _chapterParagraphs = [];
+  List<Map<String, String>> _chapterBlocks = []; // {type: 'h1'|'h2'|'h3'|'h4'|'p', text: '...'}
+  List<String> _chapterParagraphs = []; // texte simple pour TTS
   List<GlobalKey> _paragraphKeys = [];
   int _readingIndex = -1; 
 
@@ -221,6 +222,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _saveProgress();
   }
 
+  String _cleanHtmlEntity(String text) {
+    return text
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll(RegExp(r'<[^>]*>'), '') // Strip any remaining nested tags
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  }
+
   void _loadChapter(int index, {int targetReadingIndex = -1}) {
     if (_flatChapters.isEmpty) return;
     if (index < 0 || index >= _flatChapters.length) return;
@@ -229,39 +243,67 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final title = chap.Title ?? 'Chapitre ${index + 1}';
     final htmlContent = chap.HtmlContent ?? '';
 
-    String cleanText = htmlContent.replaceAll(RegExp(r'<[^>]*>'), ' ');
-    cleanText = cleanText.replaceAll('&nbsp;', ' ')
-                         .replaceAll('&amp;', '&')
-                         .replaceAll('&lt;', '<')
-                         .replaceAll('&gt;', '>')
-                         .replaceAll('&quot;', '"')
-                         .replaceAll('&#39;', "'");
-                         
-    List<String> rawChunks = cleanText.split(RegExp(r'\n\s*\n'));
-    List<String> paragraphs = rawChunks
-        .map((p) => p.replaceAll(RegExp(r'\s+'), ' ').trim())
-        .where((p) => p.isNotEmpty)
-        .toList();
-
-    String cleanTitleLow = title.toLowerCase().replaceAll(RegExp(r'[^\w]'), '').trim();
-    if (cleanTitleLow.isNotEmpty) {
-      while (paragraphs.isNotEmpty) {
-        String pLow = paragraphs.first.toLowerCase().replaceAll(RegExp(r'[^\w]'), '').trim();
-        if (pLow.isEmpty || pLow == cleanTitleLow || pLow.contains(cleanTitleLow) || cleanTitleLow.contains(pLow)) {
-          paragraphs.removeAt(0); 
+    // Parse HTML into structured blocks (headings + paragraphs)
+    final List<Map<String, String>> blocks = [];
+    
+    // Match heading tags (h1-h6) and paragraph/div/li tags
+    final tagPattern = RegExp(
+      r'<(h[1-6]|p|div|li|blockquote)[^>]*>(.*?)</\1>',
+      caseSensitive: false,
+      dotAll: true,
+    );
+    
+    final matches = tagPattern.allMatches(htmlContent);
+    
+    if (matches.isNotEmpty) {
+      for (final match in matches) {
+        final tag = match.group(1)!.toLowerCase();
+        final rawContent = match.group(2) ?? '';
+        final cleanContent = _cleanHtmlEntity(rawContent);
+        
+        if (cleanContent.isEmpty) continue;
+        
+        String blockType;
+        if (tag == 'h1') {
+          blockType = 'h1';
+        } else if (tag == 'h2') {
+          blockType = 'h2';
+        } else if (tag == 'h3') {
+          blockType = 'h3';
+        } else if (tag.startsWith('h')) {
+          blockType = 'h4'; // h4, h5, h6 all treated as h4
         } else {
-          break;
+          blockType = 'p';
+        }
+        
+        blocks.add({'type': blockType, 'text': cleanContent});
+      }
+    }
+    
+    // Fallback: if no structured tags found, split by newlines
+    if (blocks.isEmpty) {
+      String cleanText = htmlContent.replaceAll(RegExp(r'<[^>]*>'), ' ');
+      cleanText = _cleanHtmlEntity(cleanText);
+      final rawChunks = cleanText.split(RegExp(r'\n\s*\n'));
+      for (final chunk in rawChunks) {
+        final trimmed = chunk.replaceAll(RegExp(r'\s+'), ' ').trim();
+        if (trimmed.isNotEmpty) {
+          blocks.add({'type': 'p', 'text': trimmed});
         }
       }
     }
-
-    if (paragraphs.isEmpty) {
-      paragraphs = ["(Aucun texte lisible dans cette section)"];
+    
+    if (blocks.isEmpty) {
+      blocks.add({'type': 'p', 'text': '(Aucun texte lisible dans cette section)'});
     }
+
+    // Extract plain text array for TTS (all blocks are speakable)
+    final paragraphs = blocks.map((b) => b['text']!).toList();
 
     setState(() {
       _currentChapterIndex = index;
       _currentChapterTitle = title;
+      _chapterBlocks = blocks;
       _chapterParagraphs = paragraphs;
       _paragraphKeys = List.generate(paragraphs.length, (_) => GlobalKey());
       _readingIndex = targetReadingIndex;
@@ -680,7 +722,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Widget _buildNativeReader() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 100, 20, 200), // Espace en haut pour la navbar et en bas pour le lecteur
+      padding: const EdgeInsets.fromLTRB(20, 100, 20, 200),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -700,13 +742,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 textAlign: TextAlign.center,
               ),
             ),
-          ...List.generate(_chapterParagraphs.length, (index) {
-            final text = _chapterParagraphs[index];
+          ...List.generate(_chapterBlocks.length, (index) {
+            final block = _chapterBlocks[index];
+            final text = block['text']!;
+            final type = block['type']!;
             final isReading = _readingIndex == index && (_isPlaying || _isLoadingAudio || _isPaused);
             return Container(
               key: _paragraphKeys[index],
-              child: CodeParagraph(
+              child: EpubBlock(
                 text: text,
+                blockType: type,
                 isReading: isReading,
                 isDarkMode: _isDarkMode,
                 onTap: () {
@@ -842,15 +887,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 }
 
-class CodeParagraph extends StatelessWidget {
+class EpubBlock extends StatelessWidget {
   final String text;
+  final String blockType; // 'h1', 'h2', 'h3', 'h4', 'p'
   final bool isReading;
   final bool isDarkMode;
   final VoidCallback onTap;
 
-  const CodeParagraph({
+  const EpubBlock({
     super.key,
     required this.text,
+    required this.blockType,
     required this.isReading,
     required this.isDarkMode,
     required this.onTap,
@@ -858,31 +905,122 @@ class CodeParagraph extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Color baseTextColor = isDarkMode ? Colors.white : Colors.black87;
+    final baseTextColor = isDarkMode ? Colors.white : Colors.black87;
+    final accentColor = Colors.orangeAccent;
+    
+    // Typography settings based on block type
+    double fontSize;
+    FontWeight fontWeight;
+    double lineHeight;
+    double bottomMargin;
+    double topMargin;
+    TextAlign textAlign;
+    double letterSpacing;
+    
+    switch (blockType) {
+      case 'h1':
+        fontSize = 28;
+        fontWeight = FontWeight.w900;
+        lineHeight = 1.3;
+        bottomMargin = 20;
+        topMargin = 40;
+        textAlign = TextAlign.left;
+        letterSpacing = 0.5;
+        break;
+      case 'h2':
+        fontSize = 24;
+        fontWeight = FontWeight.w800;
+        lineHeight = 1.35;
+        bottomMargin = 16;
+        topMargin = 36;
+        textAlign = TextAlign.left;
+        letterSpacing = 0.3;
+        break;
+      case 'h3':
+        fontSize = 21;
+        fontWeight = FontWeight.w700;
+        lineHeight = 1.4;
+        bottomMargin = 14;
+        topMargin = 28;
+        textAlign = TextAlign.left;
+        letterSpacing = 0.2;
+        break;
+      case 'h4':
+        fontSize = 19;
+        fontWeight = FontWeight.w600;
+        lineHeight = 1.45;
+        bottomMargin = 12;
+        topMargin = 24;
+        textAlign = TextAlign.left;
+        letterSpacing = 0.1;
+        break;
+      default: // 'p'
+        fontSize = 18;
+        fontWeight = FontWeight.w400;
+        lineHeight = 1.85;
+        bottomMargin = 20;
+        topMargin = 0;
+        textAlign = TextAlign.justify;
+        letterSpacing = 0.0;
+        break;
+    }
+    
+    final bool isHeading = blockType.startsWith('h');
     
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(isHeading ? 8 : 12),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 300),
-        margin: const EdgeInsets.only(bottom: 24),
+        margin: EdgeInsets.only(bottom: bottomMargin, top: topMargin),
         decoration: BoxDecoration(
-          color: isReading ? Colors.orangeAccent.withOpacity(isDarkMode ? 0.2 : 0.08) : Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
+          color: isReading 
+            ? accentColor.withOpacity(isDarkMode ? 0.2 : 0.08) 
+            : Colors.transparent,
+          borderRadius: BorderRadius.circular(isHeading ? 8 : 12),
           border: Border.all(
-            color: isReading ? Colors.orangeAccent.withOpacity(0.4) : Colors.transparent, 
-            width: 1.5
+            color: isReading 
+              ? accentColor.withOpacity(0.4) 
+              : Colors.transparent, 
+            width: 1.5,
           ),
+          // Subtle left border accent for headings
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-        child: Text(
-          text,
-          style: TextStyle(
-            color: baseTextColor.withOpacity(isReading ? 1.0 : 0.8),
-            fontSize: 19,
-            height: 1.8,
-            fontFamily: 'Georgia', 
-          ),
+        padding: EdgeInsets.symmetric(
+          horizontal: isHeading ? 12 : 16, 
+          vertical: isHeading ? 10 : 14,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Decorative left bar for headings
+            if (isHeading && !isReading)
+              Container(
+                width: 4,
+                height: fontSize * 1.2,
+                margin: const EdgeInsets.only(right: 12),
+                decoration: BoxDecoration(
+                  color: accentColor.shade700.withOpacity(0.7),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            Expanded(
+              child: Text(
+                text,
+                style: TextStyle(
+                  color: isHeading 
+                    ? baseTextColor 
+                    : baseTextColor.withOpacity(isReading ? 1.0 : 0.82),
+                  fontSize: fontSize,
+                  fontWeight: fontWeight,
+                  height: lineHeight,
+                  fontFamily: 'Georgia',
+                  letterSpacing: letterSpacing,
+                ),
+                textAlign: textAlign,
+              ),
+            ),
+          ],
         ),
       ),
     );
