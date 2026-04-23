@@ -526,7 +526,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
           epubSource: EpubSource.fromFile(File(snapshot.data!)),
           displaySettings: EpubDisplaySettings(
             fontSize: 18,
-            fontFamily: 'Georgia',
             spread: EpubSpread.auto,
           ),
           onEpubLoaded: () {
