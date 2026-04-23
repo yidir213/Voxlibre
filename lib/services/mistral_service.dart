@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+
 class MistralService {
   static const String _baseUrl = 'https://api.mistral.ai/v1';
 
@@ -12,6 +14,7 @@ class MistralService {
     String? apiKey,
     String responseFormat = 'mp3',
   }) async {
+    apiKey ??= dotenv.env['MISTRAL_API_KEY'];
     if (apiKey == null || apiKey.trim().isEmpty) {
       throw Exception('Clé API Mistral manquante. Configurez-la dans les Paramètres.');
     }

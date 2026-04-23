@@ -1,9 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:just_audio_background/just_audio_background.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'screens/reader_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  try {
+    await dotenv.load(fileName: ".env");
+  } catch (e) {
+    debugPrint("Failed to load .env: $e");
+  }
 
   await JustAudioBackground.init(
     androidNotificationChannelId: 'com.voxlibre.audio.channel',

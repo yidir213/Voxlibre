@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../services/google_tts_service.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -53,11 +54,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _ttsProvider = prefs.getString('tts_provider') ?? 'mistral';
-      _mistralApiKeyController.text = prefs.getString('mistral_api_key') ?? '';
+      _mistralApiKeyController.text = prefs.getString('mistral_api_key') ?? dotenv.env['MISTRAL_API_KEY'] ?? '';
       _googleApiKeyController.text = prefs.getString('google_api_key') ?? '';
       _selectedGoogleVoice = prefs.getString('google_voice') ?? 'Kore';
 
-      String voiceId = prefs.getString('mistral_voice_id') ?? 'fr_marie_neutral';
+      String voiceId = prefs.getString('mistral_voice_id') ?? dotenv.env['MISTRAL_VOICE_ID'] ?? 'fr_marie_neutral';
       var parts = voiceId.split('_');
       if (parts.length == 3) {
         if (['fr', 'gb', 'en'].contains(parts[0])) _selectedLanguage = parts[0];
