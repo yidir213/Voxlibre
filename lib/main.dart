@@ -5,15 +5,12 @@ import 'screens/reader_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  try {
-    await JustAudioBackground.init(
-      androidNotificationChannelId: 'com.voxlibre.audio.channel',
-      androidNotificationChannelName: 'VoxLibre Audio',
-      androidNotificationOngoing: true,
-    );
-  } catch (e) {
-    debugPrint("Background audio init failed: $e");
-  }
+  await JustAudioBackground.init(
+    androidNotificationChannelId: 'com.voxlibre.audio.channel',
+    androidNotificationChannelName: 'VoxLibre Audio',
+    androidNotificationOngoing: true,
+    androidNotificationIcon: 'mipmap/ic_launcher',
+  );
 
   runApp(const VoxLibreApp());
 }
