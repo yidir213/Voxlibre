@@ -4,34 +4,46 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.0.0
+  sdk: ">=3.0.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
+
+  # EPUB
   epub_view: ^3.2.0
-  http: ^1.2.0
-  just_audio: ^0.9.36
+
+  # Networking
+  http: ^1.2.1
+
+  # Audio
+  just_audio: ^0.9.46
   just_audio_background: ^0.0.1-beta.17
+  audio_session: ^0.1.25
+
+  # Storage & files
   path_provider: ^2.1.2
-  flutter_dotenv: ^5.1.0
-  file_picker: ^8.0.0
+  file_picker: ^8.3.7
   shared_preferences: ^2.2.2
-  audio_session: ^0.1.18
+
+  # Env config
+  flutter_dotenv: ^5.2.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
   flutter_lints: ^4.0.0
   flutter_launcher_icons: ^0.11.0
 
 flutter_launcher_icons:
-  android: "launcher_icon"
+  android: true
   ios: true
   image_path: "assets/logo.png"
   min_sdk_android: 21
 
 flutter:
   uses-material-design: true
+
   assets:
     - .env
