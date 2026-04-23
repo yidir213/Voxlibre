@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/google_tts_service.dart';
 
-/// Écran de paramètres pour saisir le Voice ID Mistral.
-/// Le voice_id est stocké dans le .env en mémoire (à persister si besoin).
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -11,11 +10,18 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  late TextEditingController _apiKeyController;
+  late TextEditingController _mistralApiKeyController;
+  late TextEditingController _googleApiKeyController;
 
+  String _ttsProvider = 'mistral'; // 'mistral' or 'google'
+
+  // Mistral config
   String _selectedLanguage = 'fr';
   String _selectedVoice = 'marie';
   String _selectedEmotion = 'neutral';
+
+  // Google config
+  String _selectedGoogleVoice = 'Kore';
 
   final Map<String, List<String>> _voiceToEmotions = {
     'marie': ['neutral', 'happy', 'sad', 'excited', 'curious', 'angry'],
@@ -38,53 +44,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _apiKeyController = TextEditingController(text: dotenv.env['MISTRAL_API_KEY'] ?? '');
-    
-    String currentVoiceId = dotenv.env['MISTRAL_VOICE_ID'] ?? '';
-    if (currentVoiceId.isEmpty) currentVoiceId = 'fr_marie_neutral';
-    
-    var parts = currentVoiceId.split('_');
-    if (parts.length == 3) {
-      if (['fr', 'gb', 'en'].contains(parts[0])) _selectedLanguage = parts[0];
-      if (_voiceToLang.containsKey(parts[1])) _selectedVoice = parts[1];
-      
-      // Valider l'émotion par rapport à la voix
-      if (_voiceToEmotions[_selectedVoice]?.contains(parts[2]) == true) {
-        _selectedEmotion = parts[2];
-      }
+    _mistralApiKeyController = TextEditingController();
+    _googleApiKeyController = TextEditingController();
+    _loadSettings();
+  }
 
-      // Auto-corriger si la voix ne correspond pas à la langue
-      if (_voiceToLang[_selectedVoice] != _selectedLanguage) {
-        _selectedLanguage = _voiceToLang[_selectedVoice]!;
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _ttsProvider = prefs.getString('tts_provider') ?? 'mistral';
+      _mistralApiKeyController.text = prefs.getString('mistral_api_key') ?? '';
+      _googleApiKeyController.text = prefs.getString('google_api_key') ?? '';
+      _selectedGoogleVoice = prefs.getString('google_voice') ?? 'Kore';
+
+      String voiceId = prefs.getString('mistral_voice_id') ?? 'fr_marie_neutral';
+      var parts = voiceId.split('_');
+      if (parts.length == 3) {
+        if (['fr', 'gb', 'en'].contains(parts[0])) _selectedLanguage = parts[0];
+        if (_voiceToLang.containsKey(parts[1])) _selectedVoice = parts[1];
+        if (_voiceToEmotions[_selectedVoice]?.contains(parts[2]) == true) {
+          _selectedEmotion = parts[2];
+        }
+        if (_voiceToLang[_selectedVoice] != _selectedLanguage) {
+          _selectedLanguage = _voiceToLang[_selectedVoice]!;
+        }
       }
-    }
+    });
   }
 
   @override
   void dispose() {
-    _apiKeyController.dispose();
+    _mistralApiKeyController.dispose();
+    _googleApiKeyController.dispose();
     super.dispose();
   }
 
-  String get _finalVoiceId => '${_selectedLanguage}_${_selectedVoice}_${_selectedEmotion}';
+  String get _finalMistralVoiceId => '${_selectedLanguage}_${_selectedVoice}_${_selectedEmotion}';
 
-  void _save() {
-    dotenv.env['MISTRAL_API_KEY'] = _apiKeyController.text.trim();
-    dotenv.env['MISTRAL_VOICE_ID'] = _finalVoiceId;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Paramètres sauvegardés (session en cours)')),
-    );
-    Navigator.pop(context);
+  Future<void> _save() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('tts_provider', _ttsProvider);
+    await prefs.setString('mistral_api_key', _mistralApiKeyController.text.trim());
+    await prefs.setString('mistral_voice_id', _finalMistralVoiceId);
+    await prefs.setString('google_api_key', _googleApiKeyController.text.trim());
+    await prefs.setString('google_voice', _selectedGoogleVoice);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('✅ Paramètres sauvegardés !')),
+      );
+      Navigator.pop(context);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final accentColor = Colors.orangeAccent.shade700;
     return Scaffold(
       backgroundColor: Colors.grey.shade50,
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 1,
-        title: const Text('Paramètres', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+        title: Text('Paramètres', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
         iconTheme: const IconThemeData(color: Colors.black87),
       ),
       body: SingleChildScrollView(
@@ -92,110 +113,153 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Clé API Mistral',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.orangeAccent.shade700),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _apiKeyController,
-              obscureText: true,
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: Colors.white,
-                hintText: 'sk-...',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              ),
-            ),
-            const SizedBox(height: 32),
-            
-            Text(
-              'Configuration de la Voix (TTS)',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.orangeAccent.shade700),
-            ),
-            const SizedBox(height: 16),
-
-            // SÉLECTEUR LANGUE
-            _buildDropdown(
-              label: 'Langue / Accent',
-              value: _selectedLanguage,
-              items: ['fr', 'gb', 'en'],
-              onChanged: (val) {
-                if (val != null) {
-                  setState(() {
-                    _selectedLanguage = val;
-                    // Reset voice to the first available in this language
-                    _selectedVoice = _getVoicesForLang(val).first;
-                    
-                    // Si la nouvelle voix (auto-sélectionnée) ne supporte pas l'émotion actuelle, on remet par défaut
-                    if (!(_voiceToEmotions[_selectedVoice]?.contains(_selectedEmotion) ?? false)) {
-                      _selectedEmotion = 'neutral';
-                    }
-                  });
-                }
-              },
-            ),
-            
-            // SÉLECTEUR VOIX
-            _buildDropdown(
-              label: 'Interprète (Voix)',
-              value: _selectedVoice,
-              items: _getVoicesForLang(_selectedLanguage),
-              onChanged: (val) {
-                if (val != null) {
-                  setState(() {
-                    _selectedVoice = val;
-                    _selectedLanguage = _voiceToLang[val]!;
-                    
-                    // Si la nouvelle voix ne supporte pas l'émotion actuelle, on remet par défaut
-                    if (!(_voiceToEmotions[_selectedVoice]?.contains(_selectedEmotion) ?? false)) {
-                      _selectedEmotion = 'neutral';
-                    }
-                  });
-                }
-              },
-            ),
-
-            // SÉLECTEUR ÉMOTION
-            _buildDropdown(
-              label: 'Émotion',
-              value: _selectedEmotion,
-              items: _voiceToEmotions[_selectedVoice] ?? ['neutral'],
-              onChanged: (val) {
-                if (val != null) setState(() => _selectedEmotion = val);
-              },
-            ),
-
-            const SizedBox(height: 16),
-            // APERÇU ID FINAL
+            // ─── TTS PROVIDER SELECTOR ───
+            Text('Moteur TTS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: accentColor)),
+            const SizedBox(height: 12),
             Container(
-              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.orange.shade50,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.orange.shade200),
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
               ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('ID :', style: TextStyle(fontSize: 12, color: Colors.deepPurple)),
-                  const SizedBox(height: 4),
-                  Text(
-                    _finalVoiceId,
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.deepPurple, letterSpacing: 1),
+                  _buildProviderTile(
+                    title: 'Mistral AI',
+                    subtitle: 'Voxtral Mini TTS — voix expressives',
+                    icon: Icons.auto_awesome,
+                    value: 'mistral',
+                  ),
+                  Divider(height: 1, indent: 16, endIndent: 16, color: Colors.grey.shade200),
+                  _buildProviderTile(
+                    title: 'Google Gemini',
+                    subtitle: 'Gemini 3.1 Flash TTS — multilingue',
+                    icon: Icons.diamond_outlined,
+                    value: 'google',
                   ),
                 ],
               ),
             ),
+            const SizedBox(height: 32),
+
+            // ─── MISTRAL CONFIG ───
+            if (_ttsProvider == 'mistral') ...[
+              Text('Clé API Mistral', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: accentColor)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _mistralApiKeyController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: Colors.white,
+                  hintText: 'sk-...',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text('Configuration de la Voix', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: accentColor)),
+              const SizedBox(height: 12),
+              _buildDropdown(
+                label: 'Langue / Accent',
+                value: _selectedLanguage,
+                items: ['fr', 'gb', 'en'],
+                onChanged: (val) {
+                  if (val != null) {
+                    setState(() {
+                      _selectedLanguage = val;
+                      _selectedVoice = _getVoicesForLang(val).first;
+                      if (!(_voiceToEmotions[_selectedVoice]?.contains(_selectedEmotion) ?? false)) {
+                        _selectedEmotion = 'neutral';
+                      }
+                    });
+                  }
+                },
+              ),
+              _buildDropdown(
+                label: 'Interprète (Voix)',
+                value: _selectedVoice,
+                items: _getVoicesForLang(_selectedLanguage),
+                onChanged: (val) {
+                  if (val != null) {
+                    setState(() {
+                      _selectedVoice = val;
+                      _selectedLanguage = _voiceToLang[val]!;
+                      if (!(_voiceToEmotions[_selectedVoice]?.contains(_selectedEmotion) ?? false)) {
+                        _selectedEmotion = 'neutral';
+                      }
+                    });
+                  }
+                },
+              ),
+              _buildDropdown(
+                label: 'Émotion',
+                value: _selectedEmotion,
+                items: _voiceToEmotions[_selectedVoice] ?? ['neutral'],
+                onChanged: (val) {
+                  if (val != null) setState(() => _selectedEmotion = val);
+                },
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.orange.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.record_voice_over, color: accentColor, size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _finalMistralVoiceId,
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: accentColor, letterSpacing: 1),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // ─── GOOGLE CONFIG ───
+            if (_ttsProvider == 'google') ...[
+              Text('Clé API Google (Gemini)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: accentColor)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _googleApiKeyController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: Colors.white,
+                  hintText: 'AIza...',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text('Voix Google', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: accentColor)),
+              const SizedBox(height: 12),
+              _buildDropdown(
+                label: 'Voix',
+                value: _selectedGoogleVoice,
+                items: GoogleTtsService.availableVoices,
+                onChanged: (val) {
+                  if (val != null) setState(() => _selectedGoogleVoice = val);
+                },
+              ),
+            ],
 
             const SizedBox(height: 40),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.deepPurple,
+                backgroundColor: accentColor,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 6,
+                shadowColor: Colors.orangeAccent.withOpacity(0.3),
               ),
               onPressed: _save,
               child: const Text('Enregistrer les paramètres', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
@@ -206,13 +270,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildProviderTile({
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required String value,
+  }) {
+    final isSelected = _ttsProvider == value;
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      leading: Icon(icon, color: isSelected ? Colors.orangeAccent.shade700 : Colors.grey, size: 28),
+      title: Text(title, style: TextStyle(fontWeight: FontWeight.bold, color: isSelected ? Colors.black87 : Colors.grey.shade600)),
+      subtitle: Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+      trailing: Radio<String>(
+        value: value,
+        groupValue: _ttsProvider,
+        activeColor: Colors.orangeAccent.shade700,
+        onChanged: (v) => setState(() => _ttsProvider = v!),
+      ),
+      onTap: () => setState(() => _ttsProvider = value),
+    );
+  }
+
   Widget _buildDropdown({
     required String label,
     required String value,
     required List<String> items,
     required ValueChanged<String?> onChanged,
   }) {
-    // Rend les labels plus jolis (ex: "fr" -> "FR", "marie" -> "Marie")
     String displayString(String s) {
       if (s == 'fr') return 'Français (FR)';
       if (s == 'gb') return 'Anglais (GB)';
@@ -238,7 +323,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: DropdownButton<String>(
                 value: value,
                 isExpanded: true,
-                icon: const Icon(Icons.keyboard_arrow_down, color: Colors.deepPurple),
+                icon: Icon(Icons.keyboard_arrow_down, color: Colors.orangeAccent.shade700),
                 items: items.map((i) => DropdownMenuItem(value: i, child: Text(displayString(i)))).toList(),
                 onChanged: onChanged,
               ),

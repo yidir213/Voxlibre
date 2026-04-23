@@ -1,30 +1,38 @@
-import 'dart:io';
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui';
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
-import 'package:epub_view/epub_view.dart';
+import 'package:flutter_epub_viewer/flutter_epub_viewer.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:audio_session/audio_session.dart';
+import 'package:path_provider/path_provider.dart';
 import '../services/mistral_service.dart';
+import '../services/google_tts_service.dart';
 import 'settings_screen.dart';
 
+// ─── Custom Audio Source for just_audio ───
 class MyCustomSource extends StreamAudioSource {
   final List<int> bytes;
-  final String contentId;
-  final String title;
+  final String contentType;
 
-  MyCustomSource({required this.bytes, required this.contentId, required this.title}) 
-  : super(tag: MediaItem(
-      id: contentId,
-      title: title,
-      artist: 'VoxLibre IA',
-      artUri: Uri.parse('https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?q=80&w=1000&auto=format&fit=crop'), // Belle couverture pour l'écran de verrouillage
-    ));
+  MyCustomSource({
+    required this.bytes,
+    required String contentId,
+    required String title,
+    this.contentType = 'audio/mpeg',
+  }) : super(
+          tag: MediaItem(
+            id: contentId,
+            title: title,
+            artist: 'VoxLibre IA',
+          ),
+        );
 
   @override
   Future<StreamAudioResponse> request([int? start, int? end]) async {
@@ -35,11 +43,12 @@ class MyCustomSource extends StreamAudioSource {
       contentLength: end - start,
       offset: start,
       stream: Stream.value(bytes.sublist(start, end)),
-      contentType: 'audio/mpeg',
+      contentType: contentType,
     );
   }
 }
 
+// ─── Main Reader Screen ───
 class ReaderScreen extends StatefulWidget {
   const ReaderScreen({super.key});
 
@@ -49,32 +58,39 @@ class ReaderScreen extends StatefulWidget {
 
 class _ReaderScreenState extends State<ReaderScreen> {
   final MistralService _mistralService = MistralService();
+  final GoogleTtsService _googleTtsService = GoogleTtsService();
   final AudioPlayer _audioPlayer = AudioPlayer();
+  final EpubController _epubController = EpubController();
 
-  EpubBook? _epubBook;
-  List<EpubChapter> _flatChapters = [];
-  int _currentChapterIndex = 0;
+  // State
+  bool _isDarkMode = false;
+  bool _bookLoaded = false;
+  String _currentFilePath = '';
+  String _bookTitle = '';
 
+  // TTS State
+  bool _isTtsMode = false;
   bool _isLoadingAudio = false;
   bool _isPlaying = false;
-  bool _isAutoPlaying = false; 
+  bool _isAutoPlaying = false;
   bool _isPaused = false;
-  bool _isDarkMode = false;
-  
   double _playbackRate = 1.0;
 
-  String _currentChapterTitle = '';
-  List<Map<String, String>> _chapterBlocks = []; // {type: 'h1'|'h2'|'h3'|'h4'|'p', text: '...'}
-  List<String> _chapterParagraphs = []; // texte simple pour TTS
-  List<GlobalKey> _paragraphKeys = [];
-  int _readingIndex = -1; 
+  // TTS Text chunks
+  List<String> _ttsChunks = [];
+  int _currentChunkIndex = -1;
 
-  final Map<int, List<int>> _audioCache = {};
-  int _currentlyFetchingIndex = -1;
+  // Word-level highlighting
+  List<String> _currentWords = [];
+  int _highlightedWordIndex = -1;
+  Timer? _wordTimer;
+  Duration _audioDuration = Duration.zero;
 
-  // LIBRARY & PROGRESS
+  // Library
   List<Map<String, dynamic>> _recentBooks = [];
-  String _currentFilePath = '';
+
+  // Audio cache
+  final Map<int, List<int>> _audioCache = {};
 
   @override
   void initState() {
@@ -86,27 +102,42 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (!mounted) return;
       setState(() {
         _isPlaying = state.playing && state.processingState != ProcessingState.completed;
-        _isPaused = !state.playing && (state.processingState == ProcessingState.ready || state.processingState == ProcessingState.buffering);
+        _isPaused = !state.playing &&
+            (state.processingState == ProcessingState.ready || state.processingState == ProcessingState.buffering);
       });
 
       if (state.processingState == ProcessingState.completed) {
+        _wordTimer?.cancel();
+        setState(() => _highlightedWordIndex = -1);
         if (_isAutoPlaying && !_isPaused) {
-          if (_readingIndex < _chapterParagraphs.length - 1) {
-            setState(() {
-              _readingIndex++;
-            });
-            _scrollToCurrent();
+          if (_currentChunkIndex < _ttsChunks.length - 1) {
+            setState(() => _currentChunkIndex++);
             _playCurrentChunk();
             _saveProgress();
           } else {
-            setState(() {
-              _isAutoPlaying = false;
-            });
+            setState(() => _isAutoPlaying = false);
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Fin du chapitre atteinte.', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SnackBar(content: Text('Fin du texte atteinte.')),
             );
           }
         }
+      }
+    });
+
+    // Position stream for word highlighting
+    _audioPlayer.positionStream.listen((position) {
+      if (_currentWords.isEmpty || _audioDuration == Duration.zero) return;
+      final progress = position.inMilliseconds / _audioDuration.inMilliseconds;
+      final wordIndex = (progress * _currentWords.length).floor().clamp(0, _currentWords.length - 1);
+      if (wordIndex != _highlightedWordIndex && mounted) {
+        setState(() => _highlightedWordIndex = wordIndex);
+      }
+    });
+
+    // Duration stream
+    _audioPlayer.durationStream.listen((duration) {
+      if (duration != null) {
+        _audioDuration = duration;
       }
     });
   }
@@ -120,6 +151,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
+  // ─── Library ───
   Future<void> _loadRecentBooks() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -135,30 +167,23 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _saveProgress() async {
-    if (_currentFilePath.isEmpty || _epubBook == null) return;
+    if (_currentFilePath.isEmpty) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      
       final existingIndex = _recentBooks.indexWhere((b) => b['path'] == _currentFilePath);
-      
       final bookData = {
         'path': _currentFilePath,
-        'title': _epubBook?.Title ?? 'Livre',
-        'chapterIndex': _currentChapterIndex,
-        'readingIndex': _readingIndex >= 0 ? _readingIndex : 0,
+        'title': _bookTitle.isNotEmpty ? _bookTitle : 'Livre',
+        'chunkIndex': _currentChunkIndex >= 0 ? _currentChunkIndex : 0,
         'timestamp': DateTime.now().millisecondsSinceEpoch,
       };
-      
+
       if (existingIndex >= 0) {
         _recentBooks.removeAt(existingIndex);
       }
       _recentBooks.insert(0, bookData);
-      
-      // Keep only last 10 books
-      if (_recentBooks.length > 10) {
-        _recentBooks = _recentBooks.sublist(0, 10);
-      }
-      
+      if (_recentBooks.length > 10) _recentBooks = _recentBooks.sublist(0, 10);
+
       await prefs.setString('recent_books', json.encode(_recentBooks));
       if (mounted) setState(() {});
     } catch (e) {
@@ -166,24 +191,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  Future<void> _openSavedBook(Map<String, dynamic> bookData) async {
-    final path = bookData['path'] as String;
-    final file = File(path);
-    if (!file.existsSync()) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Le fichier introuvable. Peut-être supprimé ?")),
-      );
-      return;
-    }
-    
-    try {
-      final bytes = file.readAsBytesSync();
-      await _openEpubBytes(bytes, path, targetChapter: bookData['chapterIndex'] as int, targetParagraph: bookData['readingIndex'] as int);
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erreur d'ouverture : $e")));
-    }
-  }
-
+  // ─── File Picking ───
   Future<void> _pickEpubFile() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -192,247 +200,154 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     if (result != null && result.files.single.path != null) {
       final path = result.files.single.path!;
-      final file = File(path);
-      final bytes = file.readAsBytesSync();
-      await _openEpubBytes(bytes, path);
+      _openEpub(path);
     }
   }
 
-  Future<void> _openEpubBytes(Uint8List bytes, String path, {int targetChapter = 0, int targetParagraph = -1}) async {
-    final book = await EpubReader.readBook(bytes);
-    final flat = <EpubChapter>[];
-    void extractChapters(List<EpubChapter> chapters) {
-      for (var c in chapters) {
-        flat.add(c);
-        if (c.SubChapters != null && c.SubChapters!.isNotEmpty) {
-          extractChapters(c.SubChapters!);
-        }
-      }
+  Future<void> _openEpub(String path) async {
+    final file = File(path);
+    if (!file.existsSync()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Fichier introuvable.")),
+      );
+      return;
     }
-    extractChapters(book.Chapters ?? []);
+
+    // Copy to app directory for flutter_epub_viewer
+    final appDir = await getApplicationDocumentsDirectory();
+    final destPath = '${appDir.path}/current_book.epub';
+    file.copySync(destPath);
 
     setState(() {
-      _epubBook = book;
-      _flatChapters = flat;
-      _currentChapterIndex = targetChapter;
       _currentFilePath = path;
-    });
-    
-    _loadChapter(_currentChapterIndex, targetReadingIndex: targetParagraph);
-    _saveProgress();
-  }
-
-  String _cleanHtmlEntity(String text) {
-    return text
-      .replaceAll('&nbsp;', ' ')
-      .replaceAll('&amp;', '&')
-      .replaceAll('&lt;', '<')
-      .replaceAll('&gt;', '>')
-      .replaceAll('&quot;', '"')
-      .replaceAll('&#39;', "'")
-      .replaceAll(RegExp(r'<[^>]*>'), '') // Strip any remaining nested tags
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
-  }
-
-  void _loadChapter(int index, {int targetReadingIndex = -1}) {
-    if (_flatChapters.isEmpty) return;
-    if (index < 0 || index >= _flatChapters.length) return;
-
-    final chap = _flatChapters[index];
-    final title = chap.Title ?? 'Chapitre ${index + 1}';
-    final htmlContent = chap.HtmlContent ?? '';
-
-    // Parse HTML into structured blocks (headings + paragraphs)
-    final List<Map<String, String>> blocks = [];
-    
-    // Match heading tags (h1-h6) and paragraph/div/li tags
-    final tagPattern = RegExp(
-      r'<(h[1-6]|p|div|li|blockquote)[^>]*>(.*?)</\1>',
-      caseSensitive: false,
-      dotAll: true,
-    );
-    
-    final matches = tagPattern.allMatches(htmlContent);
-    
-    if (matches.isNotEmpty) {
-      for (final match in matches) {
-        final tag = match.group(1)!.toLowerCase();
-        final rawContent = match.group(2) ?? '';
-        final cleanContent = _cleanHtmlEntity(rawContent);
-        
-        if (cleanContent.isEmpty) continue;
-        
-        String blockType;
-        if (tag == 'h1') {
-          blockType = 'h1';
-        } else if (tag == 'h2') {
-          blockType = 'h2';
-        } else if (tag == 'h3') {
-          blockType = 'h3';
-        } else if (tag.startsWith('h')) {
-          blockType = 'h4'; // h4, h5, h6 all treated as h4
-        } else {
-          blockType = 'p';
-        }
-        
-        blocks.add({'type': blockType, 'text': cleanContent});
-      }
-    }
-    
-    // Fallback: if no structured tags found, split by newlines
-    if (blocks.isEmpty) {
-      String cleanText = htmlContent.replaceAll(RegExp(r'<[^>]*>'), ' ');
-      cleanText = _cleanHtmlEntity(cleanText);
-      final rawChunks = cleanText.split(RegExp(r'\n\s*\n'));
-      for (final chunk in rawChunks) {
-        final trimmed = chunk.replaceAll(RegExp(r'\s+'), ' ').trim();
-        if (trimmed.isNotEmpty) {
-          blocks.add({'type': 'p', 'text': trimmed});
-        }
-      }
-    }
-    
-    if (blocks.isEmpty) {
-      blocks.add({'type': 'p', 'text': '(Aucun texte lisible dans cette section)'});
-    }
-
-    // Extract plain text array for TTS (all blocks are speakable)
-    final paragraphs = blocks.map((b) => b['text']!).toList();
-
-    setState(() {
-      _currentChapterIndex = index;
-      _currentChapterTitle = title;
-      _chapterBlocks = blocks;
-      _chapterParagraphs = paragraphs;
-      _paragraphKeys = List.generate(paragraphs.length, (_) => GlobalKey());
-      _readingIndex = targetReadingIndex;
+      _bookTitle = path.split(Platform.pathSeparator).last.replaceAll('.epub', '');
+      _bookLoaded = true;
+      _isTtsMode = false;
+      _ttsChunks = [];
+      _currentChunkIndex = -1;
       _audioCache.clear();
-      _isPaused = false;
     });
 
-    _stopAudio();
     _saveProgress();
+  }
 
-    if (_readingIndex >= 0) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToCurrent();
+  Future<void> _openSavedBook(Map<String, dynamic> bookData) async {
+    final path = bookData['path'] as String;
+    await _openEpub(path);
+  }
+
+  // ─── TTS Logic ───
+  Future<void> _enterTtsMode() async {
+    // Get visible text from the epub viewer for TTS
+    // We'll use the epub controller to get the current chapter text
+    setState(() {
+      _isTtsMode = true;
+      _isLoadingAudio = true;
+    });
+
+    try {
+      // Extract text by loading the epub file manually
+      final file = File(_currentFilePath);
+      if (!file.existsSync()) return;
+
+      final bytes = file.readAsBytesSync();
+      // Use archive to extract HTML content from EPUB
+      final chunks = await _extractTextFromEpub(bytes);
+
+      setState(() {
+        _ttsChunks = chunks;
+        _isLoadingAudio = false;
+        _currentChunkIndex = 0;
       });
-    }
-  }
-
-  void _nextChapter() {
-    if (_currentChapterIndex < _flatChapters.length - 1) {
-      _loadChapter(_currentChapterIndex + 1);
-    }
-  }
-
-  void _prevChapter() {
-    if (_currentChapterIndex > 0) {
-      _loadChapter(_currentChapterIndex - 1);
-    }
-  }
-
-  void _scrollToCurrent() {
-    if (_readingIndex >= 0 && _readingIndex < _paragraphKeys.length) {
-      final keyContext = _paragraphKeys[_readingIndex].currentContext;
-      if (keyContext != null) {
-        Scrollable.ensureVisible(
-          keyContext,
-          duration: const Duration(milliseconds: 600),
-          curve: Curves.easeInOut,
-          alignment: 0.25,
+    } catch (e) {
+      setState(() => _isLoadingAudio = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erreur extraction texte: $e')),
         );
       }
     }
   }
 
-  void _togglePlayPause() async {
-    if (_isPlaying) {
-      await _audioPlayer.pause();
-      setState(() => _isPaused = true);
-    } else if (_isPaused) {
-      await _audioPlayer.play(); // just_audio resume() is basically play() because speed is kept.
-      await _audioPlayer.setSpeed(_playbackRate); 
-      setState(() {
-        _isPaused = false;
-        _isAutoPlaying = true;
-      });
-    } else {
-      int startIdx = _readingIndex >= 0 ? _readingIndex : 0;
-      _playFromIndex(startIdx);
-    }
-  }
+  Future<List<String>> _extractTextFromEpub(Uint8List epubBytes) async {
+    // EPUB = ZIP archive containing XHTML/HTML files
+    final archive = ZipDecoder().decodeBytes(epubBytes);
 
-  void _seekRelative(int seconds) async {
-    if (!_isPlaying && !_isPaused) return;
-    final pos = _audioPlayer.position;
-    final newPos = pos + Duration(seconds: seconds);
-    await _audioPlayer.seek(newPos < Duration.zero ? Duration.zero : newPos);
-  }
+    // Find all HTML/XHTML files from the archive
+    final htmlFiles = archive.files.where((f) {
+      final name = f.name.toLowerCase();
+      return !f.isFile ? false : (name.endsWith('.xhtml') || name.endsWith('.html') || name.endsWith('.htm'));
+    }).toList();
 
-  Future<void> _playFromIndex(int index) async {
-    await _stopAudio(); 
-    if (!mounted) return;
-    setState(() {
-      _readingIndex = index;
-      _isAutoPlaying = true;
-      _isPaused = false;
-    });
-    _scrollToCurrent();
-    _saveProgress();
-    _playCurrentChunk();
-  }
+    htmlFiles.sort((a, b) => a.name.compareTo(b.name));
 
-  Future<List<int>> _fetchAudioForIndex(int index) async {
-    final textToRead = _chapterParagraphs[index];
-    final safeText = textToRead.length > 4000 
-        ? textToRead.substring(0, 4000) 
-        : textToRead;
-
-    return await _mistralService.getTtsAudio(
-      safeText,
-      voiceId: dotenv.env['MISTRAL_VOICE_ID'] ?? '',
-    );
-  }
-
-  void _prefetchNextChunk(int nextIndex) async {
-    if (nextIndex >= _chapterParagraphs.length) return;
-    if (_audioCache.containsKey(nextIndex)) return;
-    if (_currentlyFetchingIndex == nextIndex) return;
-
-    _currentlyFetchingIndex = nextIndex;
-    try {
-      final bytes = await _fetchAudioForIndex(nextIndex);
-      _audioCache[nextIndex] = bytes;
-    } catch (e) {
-      // Échec silencieux
-    } finally {
-      if (_currentlyFetchingIndex == nextIndex) {
-        _currentlyFetchingIndex = -1;
+    final List<String> paragraphs = [];
+    for (final file in htmlFiles) {
+      final html = utf8.decode(file.content as List<int>, allowMalformed: true);
+      // Extract text from paragraph and heading tags
+      final pRegex = RegExp(r'<(?:p|h[1-6]|div|li)[^>]*>(.*?)</(?:p|h[1-6]|div|li)>', caseSensitive: false, dotAll: true);
+      for (final match in pRegex.allMatches(html)) {
+        String text = match.group(1) ?? '';
+        text = text
+            .replaceAll(RegExp(r'<[^>]*>'), '')
+            .replaceAll('&nbsp;', ' ')
+            .replaceAll('&amp;', '&')
+            .replaceAll('&lt;', '<')
+            .replaceAll('&gt;', '>')
+            .replaceAll('&quot;', '"')
+            .replaceAll('&#39;', "'")
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim();
+        if (text.length > 3) {
+          paragraphs.add(text);
+        }
       }
+    }
+
+    if (paragraphs.isEmpty) {
+      paragraphs.add('(Aucun texte lisible trouvé dans cet EPUB)');
+    }
+
+    return paragraphs;
+  }
+
+  Future<List<int>> _fetchAudioForText(String text) async {
+    final prefs = await SharedPreferences.getInstance();
+    final provider = prefs.getString('tts_provider') ?? 'mistral';
+    final safeText = text.length > 4000 ? text.substring(0, 4000) : text;
+
+    if (provider == 'google') {
+      final apiKey = prefs.getString('google_api_key') ?? '';
+      final voice = prefs.getString('google_voice') ?? 'Kore';
+      return await _googleTtsService.getTtsAudio(safeText, apiKey: apiKey, voiceName: voice);
+    } else {
+      final apiKey = prefs.getString('mistral_api_key') ?? '';
+      final voiceId = prefs.getString('mistral_voice_id') ?? 'fr_marie_neutral';
+      return await _mistralService.getTtsAudio(safeText, voiceId: voiceId, apiKey: apiKey);
     }
   }
 
   Future<void> _playCurrentChunk() async {
-    if (_readingIndex < 0 || _readingIndex >= _chapterParagraphs.length || !_isAutoPlaying) {
+    if (_currentChunkIndex < 0 || _currentChunkIndex >= _ttsChunks.length || !_isAutoPlaying) {
       _stopAudio();
       return;
     }
 
-    final textToRead = _chapterParagraphs[_readingIndex];
-    if (textToRead.startsWith("(")) {
-      setState(() { _isAutoPlaying = false; });
-      return;
-    }
+    final text = _ttsChunks[_currentChunkIndex];
 
-    List<int>? audioBytes = _audioCache[_readingIndex];
+    // Set up word list for highlighting
+    setState(() {
+      _currentWords = text.split(RegExp(r'\s+'));
+      _highlightedWordIndex = 0;
+    });
+
+    List<int>? audioBytes = _audioCache[_currentChunkIndex];
 
     if (audioBytes == null) {
       setState(() => _isLoadingAudio = true);
       try {
-        audioBytes = await _fetchAudioForIndex(_readingIndex);
-        _audioCache[_readingIndex] = audioBytes;
+        audioBytes = await _fetchAudioForText(text);
+        _audioCache[_currentChunkIndex] = audioBytes;
       } catch (e) {
         if (mounted) {
           setState(() {
@@ -446,20 +361,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (mounted) setState(() => _isLoadingAudio = false);
     }
 
-    if (!_isAutoPlaying) return; 
+    if (!_isAutoPlaying) return;
 
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final provider = prefs.getString('tts_provider') ?? 'mistral';
+      final contentType = provider == 'google' ? 'audio/wav' : 'audio/mpeg';
+
       final source = MyCustomSource(
         bytes: audioBytes,
-        contentId: 'chap_${_currentChapterIndex}_para_$_readingIndex',
-        title: 'Chapitre ${_currentChapterIndex + 1} - Paragraphe ${_readingIndex + 1}',
+        contentId: 'chunk_$_currentChunkIndex',
+        title: 'VoxLibre — Paragraphe ${_currentChunkIndex + 1}',
+        contentType: contentType,
       );
-      
+
       await _audioPlayer.setAudioSource(source);
       await _audioPlayer.setSpeed(_playbackRate);
       await _audioPlayer.play();
 
-      _prefetchNextChunk(_readingIndex + 1);
+      // Prefetch next
+      _prefetchNext(_currentChunkIndex + 1);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur Lecture: $e')));
@@ -467,54 +388,110 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
+  void _prefetchNext(int nextIndex) async {
+    if (nextIndex >= _ttsChunks.length || _audioCache.containsKey(nextIndex)) return;
+    try {
+      final bytes = await _fetchAudioForText(_ttsChunks[nextIndex]);
+      _audioCache[nextIndex] = bytes;
+    } catch (_) {}
+  }
+
+  void _togglePlayPause() async {
+    if (_isPlaying) {
+      await _audioPlayer.pause();
+      _wordTimer?.cancel();
+      setState(() => _isPaused = true);
+    } else if (_isPaused) {
+      await _audioPlayer.play();
+      await _audioPlayer.setSpeed(_playbackRate);
+      setState(() {
+        _isPaused = false;
+        _isAutoPlaying = true;
+      });
+    } else {
+      setState(() {
+        _isAutoPlaying = true;
+        _isPaused = false;
+        if (_currentChunkIndex < 0) _currentChunkIndex = 0;
+      });
+      _playCurrentChunk();
+    }
+  }
+
+  void _seekRelative(int seconds) async {
+    if (!_isPlaying && !_isPaused) return;
+    final pos = _audioPlayer.position;
+    final newPos = pos + Duration(seconds: seconds);
+    await _audioPlayer.seek(newPos < Duration.zero ? Duration.zero : newPos);
+  }
+
   Future<void> _stopAudio() async {
+    _wordTimer?.cancel();
     setState(() {
       _isAutoPlaying = false;
       _isLoadingAudio = false;
       _isPaused = false;
-      _audioCache.clear();
+      _highlightedWordIndex = -1;
+      _currentWords = [];
     });
     await _audioPlayer.stop();
   }
 
+  void _exitTtsMode() {
+    _stopAudio();
+    _audioCache.clear();
+    setState(() {
+      _isTtsMode = false;
+      _ttsChunks = [];
+      _currentChunkIndex = -1;
+    });
+  }
+
   @override
   void dispose() {
+    _wordTimer?.cancel();
     _audioPlayer.dispose();
     super.dispose();
   }
 
+  // ─── BUILD ───
   @override
   Widget build(BuildContext context) {
     final bgColor = _isDarkMode ? const Color(0xFF121212) : const Color(0xFFFAF9F6);
-    final appBarColor = _isDarkMode ? const Color(0xFF1A1A1A).withOpacity(0.95) : Colors.white.withOpacity(0.95);
     final textColor = _isDarkMode ? Colors.white : Colors.black87;
-    final iconColor = _epubBook == null ? Colors.white : textColor;
+    final iconColor = !_bookLoaded ? Colors.white : textColor;
 
     return Scaffold(
-      backgroundColor: _epubBook == null ? const Color(0xFF222222) : bgColor,
-      extendBodyBehindAppBar: _epubBook == null,
-      drawer: _epubBook != null ? _buildDrawer() : null,
+      backgroundColor: !_bookLoaded ? const Color(0xFF222222) : bgColor,
+      extendBodyBehindAppBar: !_bookLoaded,
       appBar: AppBar(
         iconTheme: IconThemeData(color: iconColor),
-        backgroundColor: _epubBook == null ? Colors.transparent : appBarColor,
-        elevation: _epubBook == null ? 0 : 0.5,
-        flexibleSpace: _epubBook != null ? ClipRect(
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-            child: Container(color: Colors.transparent),
-          ),
-        ) : null,
+        backgroundColor: !_bookLoaded ? Colors.transparent : (_isDarkMode ? const Color(0xFF1A1A1A).withOpacity(0.95) : Colors.white.withOpacity(0.95)),
+        elevation: !_bookLoaded ? 0 : 0.5,
+        flexibleSpace: _bookLoaded
+            ? ClipRect(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10), child: Container(color: Colors.transparent)))
+            : null,
         title: Text(
-          _epubBook == null ? '' : _currentChapterTitle,
+          !_bookLoaded ? '' : (_isTtsMode ? 'Lecture IA' : _bookTitle),
           style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 18),
           overflow: TextOverflow.ellipsis,
         ),
         actions: [
+          if (_bookLoaded && !_isTtsMode)
+            IconButton(
+              icon: Icon(Icons.record_voice_over, color: Colors.orangeAccent.shade700),
+              onPressed: _enterTtsMode,
+              tooltip: 'Lecture IA (TTS)',
+            ),
+          if (_bookLoaded && _isTtsMode)
+            IconButton(
+              icon: Icon(Icons.chrome_reader_mode, color: Colors.orangeAccent.shade700),
+              onPressed: _exitTtsMode,
+              tooltip: 'Mode lecture',
+            ),
           IconButton(
             icon: Icon(_isDarkMode ? Icons.light_mode : Icons.dark_mode, color: iconColor),
-            onPressed: () {
-              setState(() => _isDarkMode = !_isDarkMode);
-            },
+            onPressed: () => setState(() => _isDarkMode = !_isDarkMode),
             tooltip: 'Mode Nuit / Jour',
           ),
           IconButton(
@@ -523,76 +500,155 @@ class _ReaderScreenState extends State<ReaderScreen> {
             tooltip: 'Paramètres',
           ),
           IconButton(
-            icon: Icon(Icons.library_books_outlined, color: _epubBook == null ? Colors.white : Colors.orangeAccent.shade700),
+            icon: Icon(Icons.library_books_outlined, color: !_bookLoaded ? Colors.white : Colors.orangeAccent.shade700),
             onPressed: _pickEpubFile,
             tooltip: 'Ouvrir un EPUB',
           ),
           const SizedBox(width: 8),
         ],
       ),
-      body: _epubBook == null ? _buildWelcome() : _buildNativeReader(),
+      body: !_bookLoaded ? _buildWelcome() : (_isTtsMode ? _buildTtsReader() : _buildEpubViewer()),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      floatingActionButton: _epubBook == null ? null : _buildModernBottomBar(),
+      floatingActionButton: (_bookLoaded && _isTtsMode) ? _buildAudioControls() : null,
     );
   }
 
-  Widget _buildDrawer() {
-    return Drawer(
-      backgroundColor: _isDarkMode ? const Color(0xFF1E1E1E) : Colors.white,
-      child: SafeArea(
+  // ─── EPUB Viewer (flutter_epub_viewer) ───
+  Widget _buildEpubViewer() {
+    return FutureBuilder<String>(
+      future: _getLocalEpubPath(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator(color: Colors.orangeAccent));
+        }
+        return EpubViewer(
+          epubController: _epubController,
+          epubSource: EpubSource.fromFile(File(snapshot.data!)),
+          displaySettings: EpubDisplaySettings(
+            fontSize: 18,
+            fontFamily: 'Georgia',
+            spread: EpubSpread.auto,
+          ),
+          onEpubLoaded: () {
+            debugPrint("EPUB chargé avec flutter_epub_viewer");
+          },
+          onChaptersLoaded: (chapters) {
+            if (chapters.isNotEmpty) {
+              setState(() => _bookTitle = chapters.first.title ?? _bookTitle);
+            }
+          },
+          onRelocated: (value) {
+            debugPrint("Relocated: ${value.progress}%");
+          },
+        );
+      },
+    );
+  }
+
+  Future<String> _getLocalEpubPath() async {
+    final appDir = await getApplicationDocumentsDirectory();
+    return '${appDir.path}/current_book.epub';
+  }
+
+  // ─── TTS Reader (custom with word highlighting) ───
+  Widget _buildTtsReader() {
+    if (_isLoadingAudio && _ttsChunks.isEmpty) {
+      return const Center(
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Text(
-                'Table des Matières',
-                style: TextStyle(
-                  fontSize: 22, 
-                  fontWeight: FontWeight.bold,
-                  color: _isDarkMode ? Colors.white : Colors.black87,
-                ),
-              ),
-            ),
-            Divider(color: _isDarkMode ? Colors.white24 : Colors.black12, height: 1),
-            Expanded(
-              child: ListView.builder(
-                itemCount: _flatChapters.length,
-                itemBuilder: (context, index) {
-                  final chap = _flatChapters[index];
-                  final isCurrent = index == _currentChapterIndex;
-                  return ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 24),
-                    title: Text(
-                      chap.Title ?? 'Chapitre ${index + 1}',
-                      style: TextStyle(
-                        fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
-                        fontSize: 16,
-                        color: isCurrent 
-                          ? Colors.orangeAccent.shade700 
-                          : (_isDarkMode ? Colors.white70 : Colors.black87),
-                      ),
-                    ),
-                    tileColor: isCurrent ? Colors.orangeAccent.withOpacity(0.1) : null,
-                    onTap: () {
-                      Navigator.pop(context);
-                      _loadChapter(index);
-                    },
-                  );
-                },
-              ),
-            ),
+            CircularProgressIndicator(color: Colors.orangeAccent),
+            SizedBox(height: 16),
+            Text('Extraction du texte...', style: TextStyle(color: Colors.grey)),
           ],
         ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(20, 100, 20, 200),
+      itemCount: _ttsChunks.length,
+      itemBuilder: (context, index) {
+        final text = _ttsChunks[index];
+        final isCurrent = index == _currentChunkIndex && (_isPlaying || _isLoadingAudio || _isPaused);
+
+        return GestureDetector(
+          onTap: () {
+            setState(() {
+              _currentChunkIndex = index;
+              _isAutoPlaying = true;
+              _isPaused = false;
+            });
+            _playCurrentChunk();
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            margin: const EdgeInsets.only(bottom: 20),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: isCurrent
+                  ? Colors.orangeAccent.withOpacity(_isDarkMode ? 0.15 : 0.06)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: isCurrent ? Colors.orangeAccent.withOpacity(0.4) : Colors.transparent,
+                width: 1.5,
+              ),
+            ),
+            child: isCurrent && _currentWords.isNotEmpty
+                ? _buildHighlightedText()
+                : Text(
+                    text,
+                    style: TextStyle(
+                      color: (_isDarkMode ? Colors.white : Colors.black87).withOpacity(0.82),
+                      fontSize: 18,
+                      height: 1.85,
+                      fontFamily: 'Georgia',
+                    ),
+                    textAlign: TextAlign.justify,
+                  ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Build word-by-word highlighted text using RichText
+  Widget _buildHighlightedText() {
+    final baseColor = _isDarkMode ? Colors.white : Colors.black87;
+
+    return RichText(
+      textAlign: TextAlign.justify,
+      text: TextSpan(
+        style: TextStyle(
+          fontSize: 18,
+          height: 1.85,
+          fontFamily: 'Georgia',
+          color: baseColor.withOpacity(0.82),
+        ),
+        children: List.generate(_currentWords.length, (i) {
+          final isHighlighted = i == _highlightedWordIndex;
+          final word = _currentWords[i];
+          return TextSpan(
+            text: i < _currentWords.length - 1 ? '$word ' : word,
+            style: TextStyle(
+              color: isHighlighted ? Colors.white : null,
+              backgroundColor: isHighlighted ? Colors.orangeAccent.shade700 : null,
+              fontWeight: isHighlighted ? FontWeight.w700 : null,
+            ),
+          );
+        }),
       ),
     );
   }
 
+  // ─── Welcome Screen ───
   Widget _buildWelcome() {
     return Container(
       decoration: const BoxDecoration(
         image: DecorationImage(
-          image: NetworkImage('https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?q=80&w=1000&auto=format&fit=crop'), // Image de gens heureux lisant dehors
+          image: NetworkImage(
+              'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?q=80&w=1000&auto=format&fit=crop'),
           fit: BoxFit.cover,
         ),
       ),
@@ -601,10 +657,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [
-              Colors.black.withOpacity(0.2),
-              Colors.black.withOpacity(0.85),
-            ],
+            colors: [Colors.black.withOpacity(0.2), Colors.black.withOpacity(0.85)],
           ),
         ),
         child: Center(
@@ -619,22 +672,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 const Text(
                   'VoxLibre',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 48,
-                    fontWeight: FontWeight.w900,
-                    color: Colors.white,
-                    letterSpacing: 2,
-                  ),
+                  style: TextStyle(fontSize: 48, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 2),
                 ),
                 const SizedBox(height: 8),
                 Text(
                   'Redécouvrez le plaisir de lire, ou laissez l\'IA vous raconter vos histoires préférées.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 16,
-                    height: 1.5,
-                    color: Colors.white.withOpacity(0.9),
-                  ),
+                  style: TextStyle(fontSize: 16, height: 1.5, color: Colors.white.withOpacity(0.9)),
                 ),
                 const SizedBox(height: 48),
                 ElevatedButton(
@@ -657,18 +701,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   ),
                 ),
                 const SizedBox(height: 32),
-                
-                // ZONE BIBLIOTHÈQUE RÉCENTE
+
+                // Recent books library
                 if (_recentBooks.isNotEmpty) ...[
                   Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
                       'Reprendre la lecture',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white.withOpacity(0.9),
-                      ),
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white.withOpacity(0.9)),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -720,52 +760,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  Widget _buildNativeReader() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 100, 20, 200),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (_currentChapterTitle.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 40, top: 16),
-              child: Text(
-                _currentChapterTitle,
-                style: TextStyle(
-                  fontSize: 32,
-                  fontWeight: FontWeight.w900,
-                  color: _isDarkMode ? Colors.white : Colors.black87,
-                  fontFamily: 'Georgia',
-                  height: 1.3,
-                  letterSpacing: 0.5,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ),
-          ...List.generate(_chapterBlocks.length, (index) {
-            final block = _chapterBlocks[index];
-            final text = block['text']!;
-            final type = block['type']!;
-            final isReading = _readingIndex == index && (_isPlaying || _isLoadingAudio || _isPaused);
-            return Container(
-              key: _paragraphKeys[index],
-              child: EpubBlock(
-                text: text,
-                blockType: type,
-                isReading: isReading,
-                isDarkMode: _isDarkMode,
-                onTap: () {
-                  _playFromIndex(index);
-                },
-              ),
-            );
-          }),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildModernBottomBar() {
+  // ─── Audio Controls Bar ───
+  Widget _buildAudioControls() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Container(
@@ -784,6 +780,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Speed slider
             Row(
               children: [
                 Icon(Icons.speed_rounded, size: 18, color: _isDarkMode ? Colors.grey.shade400 : Colors.grey.shade600),
@@ -815,26 +812,18 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ],
             ),
             const SizedBox(height: 4),
+            // Playback controls
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                // BOUTON PREV CHAPTER
-                IconButton(
-                  icon: const Icon(Icons.skip_previous_rounded, size: 28),
-                  onPressed: _currentChapterIndex > 0 ? _prevChapter : null,
-                  color: _isDarkMode ? Colors.grey.shade300 : Colors.grey.shade800,
-                  tooltip: 'Chapitre précédent',
-                ),
-
-                // BOUTON -5s
+                // -5s
                 IconButton(
                   icon: const Icon(Icons.replay_5_rounded, size: 28),
                   onPressed: (_isPlaying || _isPaused) ? () => _seekRelative(-5) : null,
-                  color: (_isPlaying || _isPaused) ? Colors.orangeAccent.shade700 : (_isDarkMode ? Colors.grey.shade700 : Colors.grey.shade400),
+                  color: (_isPlaying || _isPaused) ? Colors.orangeAccent.shade700 : Colors.grey,
                   tooltip: '-5 secondes',
                 ),
-                
-                // BOUTON PLAY/PAUSE
+                // Play/Pause
                 if (_isLoadingAudio)
                   const SizedBox(
                     width: 50, height: 50,
@@ -844,182 +833,47 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     ),
                   )
                 else
-                  Container(
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.orangeAccent.shade700,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.orangeAccent.withOpacity(0.4),
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: IconButton(
-                      icon: Icon(_isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 30),
-                      color: Colors.white,
-                      onPressed: _togglePlayPause,
+                  GestureDetector(
+                    onTap: _togglePlayPause,
+                    child: Container(
+                      width: 56, height: 56,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.orangeAccent.shade700,
+                        boxShadow: [BoxShadow(color: Colors.orangeAccent.withOpacity(0.4), blurRadius: 12, offset: const Offset(0, 4))],
+                      ),
+                      child: Icon(
+                        _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                        color: Colors.white,
+                        size: 32,
+                      ),
                     ),
                   ),
-
-                // BOUTON +5s
+                // +5s
                 IconButton(
                   icon: const Icon(Icons.forward_5_rounded, size: 28),
                   onPressed: (_isPlaying || _isPaused) ? () => _seekRelative(5) : null,
-                  color: (_isPlaying || _isPaused) ? Colors.orangeAccent.shade700 : (_isDarkMode ? Colors.grey.shade700 : Colors.grey.shade400),
+                  color: (_isPlaying || _isPaused) ? Colors.orangeAccent.shade700 : Colors.grey,
                   tooltip: '+5 secondes',
                 ),
-
-                // BOUTON NEXT CHAPTER
+                // Stop
                 IconButton(
-                  icon: const Icon(Icons.skip_next_rounded, size: 28),
-                  onPressed: _currentChapterIndex < _flatChapters.length - 1 ? _nextChapter : null,
-                  color: _isDarkMode ? Colors.grey.shade300 : Colors.grey.shade800,
-                  tooltip: 'Chapitre suivant',
+                  icon: const Icon(Icons.stop_rounded, size: 28),
+                  onPressed: _isAutoPlaying ? _stopAudio : null,
+                  color: _isAutoPlaying ? Colors.red.shade400 : Colors.grey,
+                  tooltip: 'Arrêter',
                 ),
               ],
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class EpubBlock extends StatelessWidget {
-  final String text;
-  final String blockType; // 'h1', 'h2', 'h3', 'h4', 'p'
-  final bool isReading;
-  final bool isDarkMode;
-  final VoidCallback onTap;
-
-  const EpubBlock({
-    super.key,
-    required this.text,
-    required this.blockType,
-    required this.isReading,
-    required this.isDarkMode,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final baseTextColor = isDarkMode ? Colors.white : Colors.black87;
-    final accentColor = Colors.orangeAccent;
-    
-    // Typography settings based on block type
-    double fontSize;
-    FontWeight fontWeight;
-    double lineHeight;
-    double bottomMargin;
-    double topMargin;
-    TextAlign textAlign;
-    double letterSpacing;
-    
-    switch (blockType) {
-      case 'h1':
-        fontSize = 28;
-        fontWeight = FontWeight.w900;
-        lineHeight = 1.3;
-        bottomMargin = 20;
-        topMargin = 40;
-        textAlign = TextAlign.left;
-        letterSpacing = 0.5;
-        break;
-      case 'h2':
-        fontSize = 24;
-        fontWeight = FontWeight.w800;
-        lineHeight = 1.35;
-        bottomMargin = 16;
-        topMargin = 36;
-        textAlign = TextAlign.left;
-        letterSpacing = 0.3;
-        break;
-      case 'h3':
-        fontSize = 21;
-        fontWeight = FontWeight.w700;
-        lineHeight = 1.4;
-        bottomMargin = 14;
-        topMargin = 28;
-        textAlign = TextAlign.left;
-        letterSpacing = 0.2;
-        break;
-      case 'h4':
-        fontSize = 19;
-        fontWeight = FontWeight.w600;
-        lineHeight = 1.45;
-        bottomMargin = 12;
-        topMargin = 24;
-        textAlign = TextAlign.left;
-        letterSpacing = 0.1;
-        break;
-      default: // 'p'
-        fontSize = 18;
-        fontWeight = FontWeight.w400;
-        lineHeight = 1.85;
-        bottomMargin = 20;
-        topMargin = 0;
-        textAlign = TextAlign.justify;
-        letterSpacing = 0.0;
-        break;
-    }
-    
-    final bool isHeading = blockType.startsWith('h');
-    
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(isHeading ? 8 : 12),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        margin: EdgeInsets.only(bottom: bottomMargin, top: topMargin),
-        decoration: BoxDecoration(
-          color: isReading 
-            ? accentColor.withOpacity(isDarkMode ? 0.2 : 0.08) 
-            : Colors.transparent,
-          borderRadius: BorderRadius.circular(isHeading ? 8 : 12),
-          border: Border.all(
-            color: isReading 
-              ? accentColor.withOpacity(0.4) 
-              : Colors.transparent, 
-            width: 1.5,
-          ),
-          // Subtle left border accent for headings
-        ),
-        padding: EdgeInsets.symmetric(
-          horizontal: isHeading ? 12 : 16, 
-          vertical: isHeading ? 10 : 14,
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Decorative left bar for headings
-            if (isHeading && !isReading)
-              Container(
-                width: 4,
-                height: fontSize * 1.2,
-                margin: const EdgeInsets.only(right: 12),
-                decoration: BoxDecoration(
-                  color: accentColor.shade700.withOpacity(0.7),
-                  borderRadius: BorderRadius.circular(2),
+            // Current chunk info
+            if (_currentChunkIndex >= 0 && _ttsChunks.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '${_currentChunkIndex + 1} / ${_ttsChunks.length}',
+                  style: TextStyle(fontSize: 12, color: _isDarkMode ? Colors.grey.shade500 : Colors.grey.shade600),
                 ),
               ),
-            Expanded(
-              child: Text(
-                text,
-                style: TextStyle(
-                  color: isHeading 
-                    ? baseTextColor 
-                    : baseTextColor.withOpacity(isReading ? 1.0 : 0.82),
-                  fontSize: fontSize,
-                  fontWeight: fontWeight,
-                  height: lineHeight,
-                  fontFamily: 'Georgia',
-                  letterSpacing: letterSpacing,
-                ),
-                textAlign: textAlign,
-              ),
-            ),
           ],
         ),
       ),

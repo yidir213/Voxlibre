@@ -1,5 +1,5 @@
-name: voxlibre_lecteur_ebook_ia
-description: "A Flutter project for reading EPUBs and reading them aloud with Mistral TTS."
+name: voxlibre
+description: "VoxLibre — Lecteur EPUB intelligent avec synthèse vocale IA."
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -11,10 +11,13 @@ dependencies:
     sdk: flutter
 
   # EPUB
-  epub_view: ^3.2.0
+  flutter_epub_viewer: ^1.2.8
 
   # Networking
   http: ^1.2.1
+
+  # Archive (EPUB ZIP extraction)
+  archive: ^3.6.1
 
   # Audio
   just_audio: ^0.9.46
@@ -25,9 +28,6 @@ dependencies:
   path_provider: ^2.1.2
   file_picker: ^8.3.7
   shared_preferences: ^2.2.2
-
-  # Env config
-  flutter_dotenv: ^5.2.1
 
 dev_dependencies:
   flutter_test:
@@ -44,3 +44,4 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
+
