@@ -9,7 +9,7 @@
 
     <application
         android:label="Voxlibre"
-        android:name="${applicationName}"
+        android:name="com.ryanheise.audioservice.AudioServiceApplication"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
         <activity
