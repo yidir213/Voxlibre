@@ -32,7 +32,7 @@ class VoxLibreApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'VoxLibre - EPUB & IA',
+      title: 'VoxLibre',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
